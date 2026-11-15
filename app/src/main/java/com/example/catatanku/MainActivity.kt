@@ -69,8 +69,11 @@ fun App(s: AppState) {
             }
         },
         floatingActionButton = {
-            ExtendedFloatingActionButton({ showDialog = true }, icon = { Icon(Icons.Default.Add, null) },
-                text = { Text(if (tab == 0) "Kegiatan" else "Transaksi") })
+            ExtendedFloatingActionButton(
+                onClick = { showDialog = true },
+                icon = { Icon(Icons.Default.Add, contentDescription = null) },
+                text = { Text(if (tab == 0) "Kegiatan" else "Transaksi") }
+            )
         }
     ) { pad ->
         Box(Modifier.padding(pad)) { if (tab == 0) TaskScreen(s) else FinanceScreen(s) }
