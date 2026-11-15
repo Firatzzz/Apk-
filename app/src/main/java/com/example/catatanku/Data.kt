@@ -8,7 +8,8 @@ import java.util.UUID
 data class Task(
     val id: String = UUID.randomUUID().toString(),
     val title: String, val note: String, val time: Long,
-    val location: String, val done: Boolean = false
+    val location: String, val done: Boolean = false,
+    val remind: Boolean = true
 )
 
 data class Tx(
@@ -24,7 +25,8 @@ class Store(ctx: Context) {
         val a = JSONArray(sp.getString("tasks", "[]"))
         (0 until a.length()).map { val o = a.getJSONObject(it)
             Task(o.getString("id"), o.getString("title"), o.getString("note"),
-                o.getLong("time"), o.getString("location"), o.getBoolean("done")) }
+                o.getLong("time"), o.getString("location"), o.getBoolean("done"),
+                o.optBoolean("remind", true)) }
     }.getOrDefault(emptyList())
 
     fun loadTxs(): List<Tx> = runCatching {
@@ -37,7 +39,8 @@ class Store(ctx: Context) {
     fun save(tasks: List<Task>, txs: List<Tx>) {
         val t = JSONArray(); tasks.forEach { t.put(JSONObject()
             .put("id", it.id).put("title", it.title).put("note", it.note)
-            .put("time", it.time).put("location", it.location).put("done", it.done)) }
+            .put("time", it.time).put("location", it.location).put("done", it.done)
+            .put("remind", it.remind)) }
         val x = JSONArray(); txs.forEach { x.put(JSONObject()
             .put("id", it.id).put("title", it.title).put("amount", it.amount)
             .put("income", it.income).put("category", it.category).put("time", it.time)) }

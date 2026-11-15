@@ -1,12 +1,16 @@
 package com.example.catatanku
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -22,6 +26,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import java.text.NumberFormat
 import java.text.SimpleDateFormat
 import java.util.*
@@ -42,9 +47,22 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         val state = AppState(Store(this))
+        ReminderManager.rescheduleAll(this, state.tasks)
         setContent {
-            val dark = androidx.compose.foundation.isSystemInDarkTheme()
             val ctx = LocalContext.current
+            val notifLauncher = rememberLauncherForActivityResult(
+                ActivityResultContracts.RequestPermission()
+            ) { _ -> }
+
+            LaunchedEffect(Unit) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                        notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    }
+                }
+            }
+
+            val dark = androidx.compose.foundation.isSystemInDarkTheme()
             val scheme = when {
                 Build.VERSION.SDK_INT >= 31 -> if (dark) dynamicDarkColorScheme(ctx) else dynamicLightColorScheme(ctx)
                 dark -> darkColorScheme()
@@ -78,8 +96,14 @@ fun App(s: AppState) {
     ) { pad ->
         Box(Modifier.padding(pad)) { if (tab == 0) TaskScreen(s) else FinanceScreen(s) }
     }
+    val ctx = LocalContext.current
     if (showDialog) {
-        if (tab == 0) TaskDialog({ showDialog = false }) { s.tasks.add(it); s.save(); showDialog = false }
+        if (tab == 0) TaskDialog({ showDialog = false }) {
+            s.tasks.add(it)
+            s.save()
+            ReminderManager.schedule(ctx, it)
+            showDialog = false
+        }
         else TxDialog({ showDialog = false }) { s.txs.add(it); s.save(); showDialog = false }
     }
 }
@@ -102,19 +126,52 @@ fun TaskScreen(s: AppState) {
                 Row(Modifier.padding(12.dp), verticalAlignment = Alignment.Top) {
                     Checkbox(t.done, { c ->
                         val i = s.tasks.indexOfFirst { it.id == t.id }
-                        s.tasks[i] = t.copy(done = c); s.save() })
+                        val updated = t.copy(done = c)
+                        s.tasks[i] = updated
+                        s.save()
+                        if (c) ReminderManager.cancel(ctx, t.id) else ReminderManager.schedule(ctx, updated)
+                    })
                     Column(Modifier.weight(1f).padding(top = 4.dp)) {
                         Text(t.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold,
                             textDecoration = if (t.done) TextDecoration.LineThrough else null)
                         if (t.note.isNotBlank()) Text(t.note, style = MaterialTheme.typography.bodyMedium)
                         Spacer(Modifier.height(6.dp))
-                        AssistChip({}, label = { Text("${fmtDate(t.time)} • ${fmtTime(t.time)}") },
-                            leadingIcon = { Icon(Icons.Default.Schedule, null, Modifier.size(18.dp)) })
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            AssistChip({}, label = { Text("${fmtDate(t.time)} • ${fmtTime(t.time)}") },
+                                leadingIcon = { Icon(Icons.Default.Schedule, null, Modifier.size(18.dp)) })
+                            if (!t.done) {
+                                FilterChip(
+                                    selected = t.remind,
+                                    onClick = {
+                                        val i = s.tasks.indexOfFirst { it.id == t.id }
+                                        val updated = t.copy(remind = !t.remind)
+                                        s.tasks[i] = updated
+                                        s.save()
+                                        if (updated.remind) ReminderManager.schedule(ctx, updated) else ReminderManager.cancel(ctx, t.id)
+                                    },
+                                    label = { Text(if (t.remind) "Pengingat" else "Mati") },
+                                    leadingIcon = {
+                                        Icon(
+                                            if (t.remind) Icons.Default.NotificationsActive else Icons.Default.NotificationsOff,
+                                            null,
+                                            Modifier.size(16.dp)
+                                        )
+                                    }
+                                )
+                            }
+                        }
                         if (t.location.isNotBlank()) AssistChip({
                             runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("geo:0,0?q=" + Uri.encode(t.location)))) }
                         }, label = { Text(t.location) }, leadingIcon = { Icon(Icons.Default.Place, null, Modifier.size(18.dp)) })
                     }
-                    IconButton({ s.tasks.removeAll { it.id == t.id }; s.save() }) { Icon(Icons.Default.Delete, "Hapus") }
+                    IconButton({
+                        ReminderManager.cancel(ctx, t.id)
+                        s.tasks.removeAll { it.id == t.id }
+                        s.save()
+                    }) { Icon(Icons.Default.Delete, "Hapus") }
                 }
             }
         }
@@ -204,6 +261,7 @@ fun TaskDialog(onDismiss: () -> Unit, onSave: (Task) -> Unit) {
     var note by remember { mutableStateOf("") }
     var loc by remember { mutableStateOf("") }
     var millis by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    var remind by remember { mutableStateOf(true) }
     AlertDialog(onDismiss, title = { Text("Kegiatan baru") },
         text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedTextField(title, { title = it }, label = { Text("Nama kegiatan") }, singleLine = true)
@@ -211,8 +269,32 @@ fun TaskDialog(onDismiss: () -> Unit, onSave: (Task) -> Unit) {
             DateTimePicker(millis) { millis = it }
             OutlinedTextField(loc, { loc = it }, label = { Text("Lokasi (alamat / nama tempat)") },
                 leadingIcon = { Icon(Icons.Default.Place, null) })
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+            ) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                        Icon(
+                            if (remind) Icons.Default.NotificationsActive else Icons.Default.NotificationsOff,
+                            null,
+                            tint = if (remind) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+                            modifier = Modifier.size(22.dp)
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Column {
+                            Text("Pengingat", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                            Text("Bunyikan notifikasi saat jadwal tiba", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                    Switch(checked = remind, onCheckedChange = { remind = it })
+                }
+            }
         } },
-        confirmButton = { TextButton({ if (title.isNotBlank()) onSave(Task(title = title.trim(), note = note.trim(), time = millis, location = loc.trim())) }) { Text("Simpan") } },
+        confirmButton = { TextButton({ if (title.isNotBlank()) onSave(Task(title = title.trim(), note = note.trim(), time = millis, location = loc.trim(), remind = remind)) }) { Text("Simpan") } },
         dismissButton = { TextButton(onDismiss) { Text("Batal") } })
 }
 
